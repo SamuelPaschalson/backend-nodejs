@@ -1,85 +1,112 @@
 const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
-
-const authRoutes = require('./routes/auth');
-const enrollmentRoutes = require('./routes/enrollment');
-const verificationRoutes = require('./routes/verification');
-const identificationRoutes = require('./routes/identification');
-
-const errorHandler = require('./middleware/errorHandler');
-const { generalLimiter } = require('./middleware/rateLimit');
+const multer = require('multer');
+const { v4: uuidv4 } = require('uuid');
+const VoiceService = require('./services/voiceService');
 const DatabaseService = require('./services/databaseService');
-const voiceModel = require('./services/voiceModel');
-const BrainModelService = require('./services/brainModelService');
-const db = require('./config/database');
+const PhraseService = require('./services/phraseService');
 
 const app = express();
+const upload = multer({ storage: multer.memoryStorage() });
 
-// Security middleware
-app.use(helmet());
-app.use(morgan('combined'));
+// Initialize services
+const voiceService = new VoiceService();
+const dbService = new DatabaseService();
+const phraseService = new PhraseService();
 
-// Rate limiting
-app.use(generalLimiter);
+// Middleware
+app.use(express.json());
 
-// CORS
-app.use(
-  cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-    credentials: true,
-  })
-);
-
-// Body parsing
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
-
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/enrollment', enrollmentRoutes);
-app.use('/api/verification', verificationRoutes);
-app.use('/api/identification', identificationRoutes);
-
-// Health check endpoint
-app.get('/health', async (req, res) => {
-  // res.json({ status: 'OK', timestamp: new Date().toISOString() });
+// Generate phrase for enrollment
+app.get('/api/enrollment/phrase', async (req, res) => {
   try {
-    // Test database connection
-    await db.execute('SELECT 1');
-    res.json({
-      status: 'OK',
-      database: 'Connected',
-      model: BrainModelService.isTrained ? 'Trained' : 'Not trained',
-    });
+    const phrase = phraseService.generatePhrase();
+    const sessionId = uuidv4();
+
+    // Store session in database
+    await dbService.storeSession(sessionId, phrase);
+
+    res.json({ success: true, phrase, sessionId });
   } catch (error) {
-    res.status(500).json({
-      status: 'Error',
-      database: 'Disconnected',
-      error: error.message,
-    });
+    res.status(500).json({ error: 'Failed to generate phrase' });
   }
 });
 
-// Error handling
-app.use(errorHandler);
-
-// Initialize services
-async function initializeServices() {
+// Complete enrollment
+app.post('/api/enrollment', upload.single('audio'), async (req, res) => {
   try {
-    await DatabaseService.initializeDatabase();
-    // Train the model
-    await BrainModelService.trainModel();
+    const { sessionId, name, email } = req.body;
 
-    console.log('Services initialized successfully');
+    if (!req.file) {
+      return res.status(400).json({ error: 'No audio file provided' });
+    }
+
+    // Verify session
+    const session = await dbService.getSession(sessionId);
+    if (!session) {
+      return res.status(400).json({ error: 'Invalid session' });
+    }
+
+    // Process audio and extract features
+    const features = await voiceService.extractFeatures(req.file.buffer);
+
+    // Create user
+    const userId = await dbService.createUser(name, email);
+
+    // Store voice features
+    await dbService.storeVoiceFeatures(userId, session.phrase, features);
+
+    // Train model with new data
+    await voiceService.trainModel();
+
+    res.json({ success: true, userId, message: 'Enrollment successful' });
   } catch (error) {
-    console.error('Failed to initialize services:', error);
-    process.exit(1);
+    res.status(500).json({ error: 'Enrollment failed: ' + error.message });
   }
-}
+});
 
-// Set up periodic cleanup
-setInterval(DatabaseService.cleanupOldSessions, 60 * 60 * 1000); // Run every hour
+// Identify speaker
+app.post('/api/identify', upload.single('audio'), async (req, res) => {
+  try {
+    const { phrase } = req.body;
 
-module.exports = { app, initializeServices };
+    if (!req.file) {
+      return res.status(400).json({ error: 'No audio file provided' });
+    }
+
+    // Extract features from audio
+    const features = await voiceService.extractFeatures(req.file.buffer);
+
+    // Identify speaker
+    const result = await voiceService.identifySpeaker(features, phrase);
+
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: 'Identification failed: ' + error.message });
+  }
+});
+
+// Verify speaker
+app.post('/api/verify', upload.single('audio'), async (req, res) => {
+  try {
+    const { userId, phrase } = req.body;
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No audio file provided' });
+    }
+
+    // Extract features from audio
+    const features = await voiceService.extractFeatures(req.file.buffer);
+
+    // Verify speaker
+    const result = await voiceService.verifySpeaker(userId, features, phrase);
+
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: 'Verification failed: ' + error.message });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
