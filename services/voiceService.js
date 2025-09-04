@@ -1,8 +1,12 @@
-const tf = require('@tensorflow/tfjs-node');
+// const tf = require('@tensorflow/tfjs-node');
+// const brain = require('brain.js');
+// const wav = require('node-wav');
+// const meyda = require('meyda');
+const DatabaseService = require('./databaseService');
+const tf = require('@tensorflow/tfjs');
 const brain = require('brain.js');
 const wav = require('node-wav');
-const meyda = require('meyda');
-const DatabaseService = require('./databaseService');
+const { fft, ifft } = require('fft-js');
 
 class VoiceService {
   constructor() {
@@ -37,33 +41,130 @@ class VoiceService {
       const audioData = result.channelData[0]; // Use first channel
       const sampleRate = result.sampleRate;
 
-      // Configure Meyda
-      const frameSize = 512;
-      const hopSize = 256;
-      const features = [];
-
-      // Extract features frame by frame
-      for (let i = 0; i < audioData.length - frameSize; i += hopSize) {
-        const frame = audioData.slice(i, i + frameSize);
-
-        // Extract MFCC and other features using Meyda
-        const frameFeatures = meyda.extract(
-          ['mfcc', 'spectralCentroid', 'spectralFlux', 'rms', 'zcr'],
-          frame
-        );
-
-        if (frameFeatures) {
-          // Normalize and flatten features
-          const normalizedFeatures = this.normalizeFeatures(frameFeatures);
-          features.push(normalizedFeatures);
-        }
-      }
-
+      // Extract features
+      const features = this.extractAudioFeatures(audioData, sampleRate);
       return features;
     } catch (error) {
       throw new Error('Feature extraction failed: ' + error.message);
     }
   }
+
+  extractAudioFeatures(audioData, sampleRate) {
+    const frameSize = 512;
+    const hopSize = 256;
+    const features = [];
+
+    for (let i = 0; i < audioData.length - frameSize; i += hopSize) {
+      const frame = audioData.slice(i, i + frameSize);
+
+      // Extract basic features
+      const frameFeatures = {
+        mfcc: this.extractMFCC(frame, sampleRate),
+        spectralCentroid: this.calculateSpectralCentroid(frame),
+        rms: this.calculateRMS(frame),
+        zcr: this.calculateZCR(frame),
+      };
+
+      features.push(frameFeatures);
+    }
+
+    return features;
+  }
+
+  extractMFCC(frame, sampleRate) {
+    // Simplified MFCC extraction using FFT
+    const phasors = fft(frame);
+    const magnitudes = phasors.map((p) => Math.sqrt(p[0] * p[0] + p[1] * p[1]));
+
+    // Apply mel filter banks (simplified)
+    const mfccs = [];
+    const numFilters = 13;
+
+    for (let i = 0; i < numFilters; i++) {
+      const start = Math.floor((i * magnitudes.length) / numFilters);
+      const end = Math.floor(((i + 1) * magnitudes.length) / numFilters);
+      let sum = 0;
+
+      for (let j = start; j < end; j++) {
+        sum += magnitudes[j];
+      }
+
+      mfccs.push(sum / (end - start));
+    }
+
+    return mfccs;
+  }
+
+  calculateSpectralCentroid(frame) {
+    const phasors = fft(frame);
+    const magnitudes = phasors.map((p) => Math.sqrt(p[0] * p[0] + p[1] * p[1]));
+
+    let weightedSum = 0;
+    let sum = 0;
+
+    for (let i = 0; i < magnitudes.length; i++) {
+      weightedSum += i * magnitudes[i];
+      sum += magnitudes[i];
+    }
+
+    return sum === 0 ? 0 : weightedSum / sum;
+  }
+
+  calculateRMS(frame) {
+    let sum = 0;
+    for (let i = 0; i < frame.length; i++) {
+      sum += frame[i] * frame[i];
+    }
+    return Math.sqrt(sum / frame.length);
+  }
+
+  calculateZCR(frame) {
+    let zcr = 0;
+    for (let i = 1; i < frame.length; i++) {
+      if (
+        (frame[i] >= 0 && frame[i - 1] < 0) ||
+        (frame[i] < 0 && frame[i - 1] >= 0)
+      ) {
+        zcr++;
+      }
+    }
+    return zcr / frame.length;
+  }
+
+  //   async extractFeatures(audioBuffer) {
+  //     try {
+  //       // Decode WAV file
+  //       const result = wav.decode(audioBuffer);
+  //       const audioData = result.channelData[0]; // Use first channel
+  //       const sampleRate = result.sampleRate;
+
+  //       // Configure Meyda
+  //       const frameSize = 512;
+  //       const hopSize = 256;
+  //       const features = [];
+
+  //       // Extract features frame by frame
+  //       for (let i = 0; i < audioData.length - frameSize; i += hopSize) {
+  //         const frame = audioData.slice(i, i + frameSize);
+
+  //         // Extract MFCC and other features using Meyda
+  //         const frameFeatures = meyda.extract(
+  //           ['mfcc', 'spectralCentroid', 'spectralFlux', 'rms', 'zcr'],
+  //           frame
+  //         );
+
+  //         if (frameFeatures) {
+  //           // Normalize and flatten features
+  //           const normalizedFeatures = this.normalizeFeatures(frameFeatures);
+  //           features.push(normalizedFeatures);
+  //         }
+  //       }
+
+  //       return features;
+  //     } catch (error) {
+  //       throw new Error('Feature extraction failed: ' + error.message);
+  //     }
+  //   }
 
   normalizeFeatures(features) {
     const normalized = {};
