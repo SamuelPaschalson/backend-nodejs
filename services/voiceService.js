@@ -1,7 +1,7 @@
 const tf = require('@tensorflow/tfjs-node');
 const brain = require('brain.js');
 const wav = require('node-wav');
-const mfcc = require('voice-mfcc');
+const meyda = require('meyda');
 const DatabaseService = require('./databaseService');
 
 class VoiceService {
@@ -37,22 +37,51 @@ class VoiceService {
       const audioData = result.channelData[0]; // Use first channel
       const sampleRate = result.sampleRate;
 
-      // Extract MFCC features
-      const mfccOptions = {
-        sampleRate: sampleRate,
-        bufferLength: audioData.length,
-        hopLength: 256,
-        numFilters: 40,
-        numCoefficients: 13,
-        lowFrequency: 0,
-        highFrequency: sampleRate / 2,
-      };
+      // Configure Meyda
+      const frameSize = 512;
+      const hopSize = 256;
+      const features = [];
 
-      const features = mfcc(audioData, mfccOptions);
+      // Extract features frame by frame
+      for (let i = 0; i < audioData.length - frameSize; i += hopSize) {
+        const frame = audioData.slice(i, i + frameSize);
+
+        // Extract MFCC and other features using Meyda
+        const frameFeatures = meyda.extract(
+          ['mfcc', 'spectralCentroid', 'spectralFlux', 'rms', 'zcr'],
+          frame
+        );
+
+        if (frameFeatures) {
+          // Normalize and flatten features
+          const normalizedFeatures = this.normalizeFeatures(frameFeatures);
+          features.push(normalizedFeatures);
+        }
+      }
+
       return features;
     } catch (error) {
       throw new Error('Feature extraction failed: ' + error.message);
     }
+  }
+
+  normalizeFeatures(features) {
+    const normalized = {};
+
+    for (const [key, value] of Object.entries(features)) {
+      if (Array.isArray(value)) {
+        // Normalize each value in the array
+        normalized[key] = value.map((v) => this.minMaxNormalize(v, -100, 100));
+      } else if (typeof value === 'number') {
+        normalized[key] = this.minMaxNormalize(value, -100, 100);
+      }
+    }
+
+    return normalized;
+  }
+
+  minMaxNormalize(value, min, max) {
+    return (value - min) / (max - min);
   }
 
   async trainModel() {
@@ -67,7 +96,7 @@ class VoiceService {
 
       // Prepare data for brain.js
       const formattedData = trainingData.map((item) => ({
-        input: item.features.flat(),
+        input: this.flattenFeatures(item.features),
         output: { [item.userId]: 1 },
       }));
 
@@ -91,6 +120,23 @@ class VoiceService {
     }
   }
 
+  flattenFeatures(features) {
+    // Flatten the features array into a single dimension
+    const flattened = [];
+
+    for (const frame of features) {
+      for (const value of Object.values(frame)) {
+        if (Array.isArray(value)) {
+          flattened.push(...value);
+        } else {
+          flattened.push(value);
+        }
+      }
+    }
+
+    return flattened;
+  }
+
   async identifySpeaker(features, phrase) {
     if (!this.isTrained) {
       await this.trainModel();
@@ -104,8 +150,11 @@ class VoiceService {
         return { success: false, message: 'No users found for this phrase' };
       }
 
+      // Flatten features for the model
+      const flattenedFeatures = this.flattenFeatures(features);
+
       // Run model prediction
-      const output = this.model.run(features.flat());
+      const output = this.model.run(flattenedFeatures);
 
       // Find user with highest probability
       let bestMatch = null;
@@ -143,8 +192,11 @@ class VoiceService {
     }
 
     try {
+      // Flatten features for the model
+      const flattenedFeatures = this.flattenFeatures(features);
+
       // Run model prediction
-      const output = this.model.run(features.flat());
+      const output = this.model.run(flattenedFeatures);
       const confidence = output[userId] || 0;
       const isMatch = confidence > 0.7;
 
