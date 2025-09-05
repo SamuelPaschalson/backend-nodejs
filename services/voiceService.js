@@ -1,12 +1,7 @@
-// const tf = require('@tensorflow/tfjs-node');
-// const brain = require('brain.js');
-// const wav = require('node-wav');
-// const meyda = require('meyda');
-const DatabaseService = require('./databaseService');
-// const tf = require('@tensorflow/tfjs');
 const brain = require('brain.js');
 const wav = require('node-wav');
-const { fft, ifft } = require('fft-js');
+const meyda = require('meyda');
+const DatabaseService = require('./databaseService');
 
 class VoiceService {
   constructor() {
@@ -54,8 +49,11 @@ class VoiceService {
       const audioData = result.channelData[0]; // Use first channel
       const sampleRate = result.sampleRate;
 
-      // Extract features
-      const features = this.extractAudioFeatures(audioData, sampleRate);
+      // Extract features using Meyda
+      const features = this.extractAudioFeaturesWithMeyda(
+        audioData,
+        sampleRate
+      );
       return features;
     } catch (error) {
       console.error('Feature extraction error:', error);
@@ -96,141 +94,47 @@ class VoiceService {
     }
   }
 
-  extractAudioFeatures(audioData, sampleRate) {
+  extractAudioFeaturesWithMeyda(audioData, sampleRate) {
     const frameSize = 512;
     const hopSize = 256;
     const features = [];
 
+    // Configure Meyda options
+    const meydaOptions = {
+      sampleRate: sampleRate,
+      bufferSize: frameSize,
+      featureExtractors: [
+        'mfcc',
+        'spectralCentroid',
+        'spectralFlux',
+        'rms',
+        'zcr',
+        'energy',
+      ],
+      callback: (features) => {
+        // This callback approach won't work for batch processing
+        // We'll use the synchronous extract method instead
+      },
+    };
+
     for (let i = 0; i < audioData.length - frameSize; i += hopSize) {
       const frame = audioData.slice(i, i + frameSize);
 
-      // Extract basic features
-      const frameFeatures = {
-        mfcc: this.extractMFCC(frame, sampleRate),
-        spectralCentroid: this.calculateSpectralCentroid(frame),
-        rms: this.calculateRMS(frame),
-        zcr: this.calculateZCR(frame),
-      };
+      // Extract features using Meyda's synchronous method
+      const frameFeatures = meyda.extract(
+        ['mfcc', 'spectralCentroid', 'spectralFlux', 'rms', 'zcr', 'energy'],
+        frame
+      );
 
-      features.push(frameFeatures);
+      if (frameFeatures) {
+        // Normalize features
+        const normalizedFeatures = this.normalizeFeatures(frameFeatures);
+        features.push(normalizedFeatures);
+      }
     }
 
     return features;
   }
-
-  extractMFCC(frame, sampleRate) {
-    // Simple FFT implementation
-    const magnitudes = this.simpleFFT(frame);
-
-    // Apply mel filter banks (simplified)
-    const mfccs = [];
-    const numFilters = 13;
-
-    for (let i = 0; i < numFilters; i++) {
-      const start = Math.floor((i * magnitudes.length) / numFilters);
-      const end = Math.floor(((i + 1) * magnitudes.length) / numFilters);
-      let sum = 0;
-
-      for (let j = start; j < end; j++) {
-        sum += magnitudes[j];
-      }
-
-      mfccs.push(sum / (end - start));
-    }
-
-    return mfccs;
-  }
-
-  simpleFFT(signal) {
-    // A simple FFT implementation
-    const n = signal.length;
-    const magnitudes = new Array(n / 2);
-
-    for (let i = 0; i < n / 2; i++) {
-      let real = 0;
-      let imag = 0;
-
-      for (let j = 0; j < n; j++) {
-        const angle = (2 * Math.PI * i * j) / n;
-        real += signal[j] * Math.cos(angle);
-        imag -= signal[j] * Math.sin(angle);
-      }
-
-      magnitudes[i] = Math.sqrt(real * real + imag * imag);
-    }
-
-    return magnitudes;
-  }
-
-  calculateSpectralCentroid(frame) {
-    const magnitudes = this.simpleFFT(frame);
-
-    let weightedSum = 0;
-    let sum = 0;
-
-    for (let i = 0; i < magnitudes.length; i++) {
-      weightedSum += i * magnitudes[i];
-      sum += magnitudes[i];
-    }
-
-    return sum === 0 ? 0 : weightedSum / sum;
-  }
-
-  calculateRMS(frame) {
-    let sum = 0;
-    for (let i = 0; i < frame.length; i++) {
-      sum += frame[i] * frame[i];
-    }
-    return Math.sqrt(sum / frame.length);
-  }
-
-  calculateZCR(frame) {
-    let zcr = 0;
-    for (let i = 1; i < frame.length; i++) {
-      if (
-        (frame[i] >= 0 && frame[i - 1] < 0) ||
-        (frame[i] < 0 && frame[i - 1] >= 0)
-      ) {
-        zcr++;
-      }
-    }
-    return zcr / frame.length;
-  }
-
-  //   async extractFeatures(audioBuffer) {
-  //     try {
-  //       // Decode WAV file
-  //       const result = wav.decode(audioBuffer);
-  //       const audioData = result.channelData[0]; // Use first channel
-  //       const sampleRate = result.sampleRate;
-
-  //       // Configure Meyda
-  //       const frameSize = 512;
-  //       const hopSize = 256;
-  //       const features = [];
-
-  //       // Extract features frame by frame
-  //       for (let i = 0; i < audioData.length - frameSize; i += hopSize) {
-  //         const frame = audioData.slice(i, i + frameSize);
-
-  //         // Extract MFCC and other features using Meyda
-  //         const frameFeatures = meyda.extract(
-  //           ['mfcc', 'spectralCentroid', 'spectralFlux', 'rms', 'zcr'],
-  //           frame
-  //         );
-
-  //         if (frameFeatures) {
-  //           // Normalize and flatten features
-  //           const normalizedFeatures = this.normalizeFeatures(frameFeatures);
-  //           features.push(normalizedFeatures);
-  //         }
-  //       }
-
-  //       return features;
-  //     } catch (error) {
-  //       throw new Error('Feature extraction failed: ' + error.message);
-  //     }
-  //   }
 
   normalizeFeatures(features) {
     const normalized = {};
@@ -249,6 +153,23 @@ class VoiceService {
 
   minMaxNormalize(value, min, max) {
     return (value - min) / (max - min);
+  }
+
+  flattenFeatures(features) {
+    // Flatten the features array into a single dimension
+    const flattened = [];
+
+    for (const frame of features) {
+      for (const value of Object.values(frame)) {
+        if (Array.isArray(value)) {
+          flattened.push(...value);
+        } else {
+          flattened.push(value);
+        }
+      }
+    }
+
+    return flattened;
   }
 
   async trainModel() {
@@ -285,23 +206,6 @@ class VoiceService {
       console.error('Model training error:', error);
       return false;
     }
-  }
-
-  flattenFeatures(features) {
-    // Flatten the features array into a single dimension
-    const flattened = [];
-
-    for (const frame of features) {
-      for (const value of Object.values(frame)) {
-        if (Array.isArray(value)) {
-          flattened.push(...value);
-        } else {
-          flattened.push(value);
-        }
-      }
-    }
-
-    return flattened;
   }
 
   async identifySpeaker(features, phrase) {
@@ -349,6 +253,7 @@ class VoiceService {
         isMatch: highestConfidence > 0.7,
       };
     } catch (error) {
+      console.error('Identification error:', error);
       throw new Error('Identification failed: ' + error.message);
     }
   }
@@ -382,6 +287,7 @@ class VoiceService {
         message: isMatch ? 'Verification successful' : 'Verification failed',
       };
     } catch (error) {
+      console.error('Verification error:', error);
       throw new Error('Verification failed: ' + error.message);
     }
   }
