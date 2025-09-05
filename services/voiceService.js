@@ -36,8 +36,21 @@ class VoiceService {
 
   async extractFeatures(audioBuffer) {
     try {
+      // Check if buffer has WAV headers
+      const header = audioBuffer.slice(0, 4).toString('ascii');
+
+      // If it doesn't have RIFF header, add it
+      if (header !== 'RIFF') {
+        audioBuffer = this.addWavHeaders(audioBuffer);
+      }
+
       // Decode WAV file
       const result = wav.decode(audioBuffer);
+
+      if (!result || !result.channelData || result.channelData.length === 0) {
+        throw new Error('Failed to decode WAV file');
+      }
+
       const audioData = result.channelData[0]; // Use first channel
       const sampleRate = result.sampleRate;
 
@@ -45,7 +58,41 @@ class VoiceService {
       const features = this.extractAudioFeatures(audioData, sampleRate);
       return features;
     } catch (error) {
+      console.error('Feature extraction error:', error);
       throw new Error('Feature extraction failed: ' + error.message);
+    }
+  }
+
+  addWavHeaders(audioBuffer) {
+    // Create WAV headers for raw audio data
+    const buffer = new ArrayBuffer(44 + audioBuffer.length);
+    const view = new DataView(buffer);
+
+    // Write WAV header
+    this.writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + audioBuffer.length, true);
+    this.writeString(view, 8, 'WAVE');
+    this.writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 16000, true);
+    view.setUint32(28, 16000 * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    this.writeString(view, 36, 'data');
+    view.setUint32(40, audioBuffer.length, true);
+
+    // Write audio data
+    const wavData = new Uint8Array(buffer);
+    wavData.set(new Uint8Array(audioBuffer), 44);
+
+    return Buffer.from(wavData);
+  }
+
+  writeString(view, offset, string) {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
     }
   }
 
@@ -72,9 +119,8 @@ class VoiceService {
   }
 
   extractMFCC(frame, sampleRate) {
-    // Simplified MFCC extraction using FFT
-    const phasors = fft(frame);
-    const magnitudes = phasors.map((p) => Math.sqrt(p[0] * p[0] + p[1] * p[1]));
+    // Simple FFT implementation
+    const magnitudes = this.simpleFFT(frame);
 
     // Apply mel filter banks (simplified)
     const mfccs = [];
@@ -95,9 +141,29 @@ class VoiceService {
     return mfccs;
   }
 
+  simpleFFT(signal) {
+    // A simple FFT implementation
+    const n = signal.length;
+    const magnitudes = new Array(n / 2);
+
+    for (let i = 0; i < n / 2; i++) {
+      let real = 0;
+      let imag = 0;
+
+      for (let j = 0; j < n; j++) {
+        const angle = (2 * Math.PI * i * j) / n;
+        real += signal[j] * Math.cos(angle);
+        imag -= signal[j] * Math.sin(angle);
+      }
+
+      magnitudes[i] = Math.sqrt(real * real + imag * imag);
+    }
+
+    return magnitudes;
+  }
+
   calculateSpectralCentroid(frame) {
-    const phasors = fft(frame);
-    const magnitudes = phasors.map((p) => Math.sqrt(p[0] * p[0] + p[1] * p[1]));
+    const magnitudes = this.simpleFFT(frame);
 
     let weightedSum = 0;
     let sum = 0;
