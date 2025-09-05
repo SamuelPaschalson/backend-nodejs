@@ -4,9 +4,19 @@ const { v4: uuidv4 } = require('uuid');
 const VoiceService = require('./services/voiceService');
 const DatabaseService = require('./services/databaseService');
 const PhraseService = require('./services/phraseService');
+const cors = require('cors');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
+app.use(cors());
+
+// Or enable CORS for specific origins
+app.use(
+  cors({
+    origin: ['http://localhost:5173', 'http://localhost:3000'], // Add your frontend URLs
+    credentials: true,
+  })
+);
 
 // Initialize services
 const voiceService = new VoiceService();
